@@ -954,8 +954,8 @@ function skewTable(target, entry) {
     return node;
   }
   note.textContent =
-    "в клетке — сколько стеков этой длины ляжет на этот рил · " +
-    "пусто значит «как в мастере» · вписанное число сильнее общего множителя";
+    "сколько стеков этой длины ляжет на этот рил — тяни или впиши · " +
+    "пусто значит «как в мастере» · заданное сильнее общего множителя";
 
   const grid = document.createElement("div");
   grid.className = "skew-grid";
@@ -1005,6 +1005,19 @@ function handCell(target, entry, base, len, reel) {
     `сколько стеков длиной ${len} на риле ${reel + 1}` +
     `\nпусто — как в мастере (${inherited})`;
 
+  const shown = hand === null ? inherited : hand;
+
+  // Предел шкалы с запасом от текущего значения, иначе ползунок упирался бы
+  // сразу: количества тут доходят до сотни.
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.className = "hand-slider";
+  slider.min = "0";
+  slider.max = String(Math.max(30, inherited * 3, shown * 2));
+  slider.step = "1";
+  slider.value = String(shown);
+  slider.title = `тяни, чтобы задать число стеков длиной ${len}`;
+
   const out = document.createElement("div");
   out.className = "skew-out";
   const show = (stacks, own) => {
@@ -1014,25 +1027,38 @@ function handCell(target, entry, base, len, reel) {
     cell.classList.toggle("off", !stacks);
     cell.classList.toggle("on", own);
   };
-  show(hand === null ? inherited : hand, hand !== null);
+  show(shown, hand !== null);
+
+  const commit = (value) => call("/api/pattern/count", { target: target.key, length: len, reel, value });
+
+  // пока тянут — считаем на месте; запись уходит по отпусканию
+  slider.oninput = () => {
+    const value = Number(slider.value);
+    input.value = value;
+    show(value, true);
+  };
+  slider.onchange = () => commit(Number(slider.value));
 
   input.onchange = () => {
     const text = String(input.value).trim();
     if (text === "") {
+      slider.value = String(inherited);
       show(inherited, false);
-      call("/api/pattern/count", { target: target.key, length: len, reel, value: "" });
+      commit("");
       return;
     }
     const value = Math.round(Number(text));
     if (!Number.isFinite(value) || value < 0) {
       input.value = hand === null ? "" : hand; // опечатка ничего не меняет
+      slider.value = String(shown);
       return;
     }
+    slider.value = String(Math.min(value, Number(slider.max)));
     show(value, true);
-    call("/api/pattern/count", { target: target.key, length: len, reel, value });
+    commit(value);
   };
 
-  cell.append(input, out);
+  cell.append(input, slider, out);
   return cell;
 }
 

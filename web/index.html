@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reel Generator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-row">
+      <h1>Reel<span>Generator</span></h1>
+
+      <div class="setbar">
+        <label class="set-pick">
+          <span>сет</span>
+          <select id="set-select"></select>
+        </label>
+        <span class="hint" id="set-path"></span>
+        <button class="btn" id="btn-set-save">Сохранить</button>
+        <button class="btn" id="btn-set-copy">Сохранить как…</button>
+        <button class="btn" id="btn-set-new">+ Новый</button>
+        <button class="btn" id="btn-set-rename">Переименовать</button>
+        <button class="btn" id="btn-set-export">Экспорт файлом</button>
+        <button class="btn" id="btn-set-import">Импорт файла</button>
+        <button class="btn hidden" id="btn-set-restore">Из корзины</button>
+        <button class="btn danger" id="btn-set-delete">Удалить</button>
+      </div>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="symbols">Символы</button>
+      <button class="tab" data-tab="hidden">Скрытые</button>
+      <button class="tab" data-tab="field">Поле</button>
+      <button class="tab" data-tab="gaps">Пересечение</button>
+      <button class="tab" data-tab="reels">Ленты</button>
+      <button class="tab" data-tab="pattern">Паттерн</button>
+      <button class="tab" data-tab="stats">Статистика</button>
+    </nav>
+  </header>
+
+  <div class="banner hidden" id="banner"></div>
+
+  <div id="messages" class="messages"></div>
+
+  <main class="page" id="tab-symbols">
+    <div class="toolbar">
+      <button class="btn primary" id="btn-add">+ Символ</button>
+      <label class="inline">
+        <span>ставка</span>
+        <input type="number" id="bet" min="0" step="1" value="20">
+      </label>
+      <span class="counter" id="counter">символов: 0</span>
+      <span class="hint">выплаты в кредитах · под полем — сколько это ставок за линию</span>
+    </div>
+
+    <div class="grid" id="grid"></div>
+  </main>
+
+  <main class="page hidden" id="tab-hidden">
+    <div class="toolbar">
+      <span class="counter" id="hidden-counter">скрытых символов: 0</span>
+      <span class="hint">перед стопом каждый скрытый символ делает один бросок и все его копии на экране становятся выбранным символом · веса относительные, проценты считаются сами</span>
+    </div>
+
+    <div class="hidden-cards" id="hidden-cards"></div>
+  </main>
+
+  <main class="page hidden" id="tab-field">
+    <div class="toolbar">
+      <label class="inline">
+        <span>рядов (по вертикали)</span>
+        <input type="number" id="rows" min="1" max="12" value="4">
+      </label>
+      <label class="inline">
+        <span>барабанов (по горизонтали)</span>
+        <input type="number" id="reels" min="1" max="10" value="5">
+      </label>
+      <span class="counter" id="lines-counter">линий: 0</span>
+    </div>
+
+    <div class="toolbar">
+      <button class="btn primary" id="btn-line-add">+ Линия</button>
+      <button class="btn" id="btn-lines-paste">Вставить линии текстом</button>
+      <button class="btn" id="btn-lines-reset">20 стандартных</button>
+      <span class="hint">клик по клетке — линия проходит через неё на этом барабане</span>
+    </div>
+
+    <div class="lines" id="lines"></div>
+  </main>
+
+  <main class="page hidden" id="tab-gaps">
+    <div class="toolbar">
+      <button class="btn primary" id="btn-gap-add">+ Правило</button>
+      <span class="counter" id="gaps-counter">правил: 0</span>
+      <span class="hint">между двумя символами должно лежать минимум N символов-прокладок · учитывается при Generate на вкладке «Ленты»</span>
+    </div>
+
+    <div class="gap-rows" id="gap-rows"></div>
+  </main>
+
+  <main class="page hidden" id="tab-reels">
+    <div class="toolbar">
+      <div class="reel-pick" id="reel-pick"></div>
+      <button class="btn toggle" id="btn-master" title="один рил-эталон, из которого множителями выводятся все пять">Мастер-рил</button>
+      <button class="btn" id="btn-group-new">+ Группа</button>
+      <button class="btn" id="btn-reel-copy">На все рилы</button>
+      <button class="btn" id="btn-reel-clear">Очистить рил</button>
+      <span class="hint">в колонке — сколько стеков этой длины: 6 / 2 / 2 по длинам 2 / 3 / 4 это 10 стеков и 26 символов · ∞ — этому символу разрешено склеивать свои стеки</span>
+    </div>
+
+
+    <div class="stack-rows" id="stack-rows"></div>
+
+    <div class="toolbar gen">
+      <button class="btn primary big" id="btn-generate">Generate</button>
+      <button class="btn" id="btn-reseed">↺ Новые сиды всем</button>
+      <button class="btn toggle" id="btn-filler-low" title="после low-стека укладчик пробует поставить не-low и наоборот — дешёвое разделяет ценное">low как прослойка</button>
+      <span class="counter" id="gen-stats"></span>
+      <span class="hint">каждый рил можно перекатывать отдельно — сид и ↺ под его лентой</span>
+    </div>
+
+    <div class="text-out hidden" id="text-out">
+      <div class="text-head">
+        <h3>Ленты текстом</h3>
+        <button class="btn" id="btn-copy-strips">Скопировать</button>
+        <span class="hint" id="strips-file"></span>
+      </div>
+      <textarea id="strips-text" readonly rows="7" spellcheck="false"></textarea>
+    </div>
+
+    <div class="strips" id="strips"></div>
+  </main>
+
+  <main class="page hidden" id="tab-pattern">
+    <div class="pattern" id="pattern"></div>
+
+    <div class="toolbar gen" id="pattern-gen">
+      <button class="btn primary big" id="btn-pattern-generate">Generate Reels</button>
+      <button class="btn" id="btn-pattern-reseed">↺ Новые сиды всем</button>
+      <span class="counter" id="pattern-stats"></span>
+      <span class="hint">эти ленты и крутит «Статистика» — она считает по тому, что лежит в сете</span>
+    </div>
+
+    <div class="text-out hidden" id="pattern-text-out">
+      <div class="text-head">
+        <h3>Ленты текстом</h3>
+        <button class="btn" id="btn-pattern-copy">Скопировать</button>
+        <span class="hint" id="pattern-strips-file"></span>
+      </div>
+      <textarea id="pattern-strips-text" readonly rows="8" spellcheck="false"></textarea>
+    </div>
+
+    <div class="strips" id="pattern-strips"></div>
+  </main>
+
+  <main class="page hidden" id="tab-stats">
+    <div class="stats-top">
+      <section class="slot-box">
+        <div class="toolbar">
+          <button class="btn primary big" id="btn-spin">Спин</button>
+          <span class="counter" id="spin-result">крути — покажу, что выпало</span>
+        </div>
+        <div class="slot" id="slot"></div>
+        <div class="win-list" id="win-list"></div>
+      </section>
+
+      <section class="comp-box">
+        <h3>Состав рилсета</h3>
+        <div class="comp" id="comp"></div>
+      </section>
+    </div>
+
+    <section class="sim-box">
+      <div class="toolbar">
+        <label class="inline">
+          <span>раундов</span>
+          <input type="number" id="rounds" min="1" step="1000" value="100000">
+        </label>
+        <button class="btn primary" id="btn-sim">Симуляция</button>
+        <span class="hint">линия платит слева направо с первого барабана · wild подставляется вместо обычных символов, но не вместо special</span>
+      </div>
+
+      <div class="toolbar triggers">
+        <label class="inline">
+          <span>бонус: от</span>
+          <input type="number" id="bonus-min" min="1" max="60" value="6">
+        </label>
+        <select id="bonus-symbol"></select>
+        <span class="sep">антисипейшн: от</span>
+        <input type="number" id="bonus-ant-min" min="1" max="60" value="4">
+        <select id="bonus-ant-each">
+          <option value="">суммарно на рилах</option>
+          <option value="1">на каждом из рилов</option>
+        </select>
+        <input type="text" id="bonus-ant-reels" value="1,2,3,4" spellcheck="false">
+      </div>
+
+      <div class="toolbar triggers">
+        <label class="inline">
+          <span>фриспины: от</span>
+          <input type="number" id="fs-min" min="1" max="60" value="3">
+        </label>
+        <select id="fs-symbol"></select>
+        <span class="sep">антисипейшн: от</span>
+        <input type="number" id="fs-ant-min" min="1" max="60" value="1">
+        <select id="fs-ant-each">
+          <option value="">суммарно на рилах</option>
+          <option value="1">на каждом из рилов</option>
+        </select>
+        <input type="text" id="fs-ant-reels" value="1,3" spellcheck="false">
+      </div>
+
+      <div class="sim-head">
+        <div class="rtp" id="rtp">RTP — <b>?</b></div>
+        <div class="rtp" id="hit-rate"></div>
+        <div class="rtp" id="win-avg"></div>
+        <div class="rtp" id="wild-part"></div>
+        <div class="rtp" id="hidden-part"></div>
+        <div class="rtp" id="trig-bonus"></div>
+        <div class="rtp" id="trig-fs"></div>
+        <div class="rtp" id="ant-bonus"></div>
+        <div class="rtp" id="ant-fs"></div>
+      </div>
+
+      <div class="dists" id="dists"></div>
+      <div class="lengths" id="lengths"></div>
+      <div class="hidden-roll" id="hidden-roll"></div>
+      <div class="values" id="values"></div>
+      <div class="hits" id="hits"></div>
+      <div class="chart-box" id="hits-chart"></div>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="paste-modal">
+    <div class="modal-box">
+      <h3>Линии текстом</h3>
+      <p class="hint">Формат любой, лишь бы были списки в скобках:<br>payline_01 = [0, 0, 0, 0, 0]</p>
+      <textarea id="paste-text" spellcheck="false" rows="12"></textarea>
+      <div class="row">
+        <button class="btn primary" id="btn-paste-ok">Загрузить</button>
+        <button class="btn" id="btn-paste-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

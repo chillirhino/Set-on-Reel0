@@ -226,8 +226,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestLengthPriority(MasterCase):
-    """Приоритет длин: какие именно стеки чаще ложатся на какой рил."""
+class TestStackPriority(MasterCase):
+    """Приоритет стеков: сколько стеков какой длины стоит на каком риле."""
 
     def setUp(self):
         super().setUp()
@@ -238,34 +238,41 @@ class TestLengthPriority(MasterCase):
     def stacks(self, reel_index):
         return self.sets.effective_reels(self.doc())[reel_index].get("4", {}).get("stacks", {})
 
-    def test_without_priority_every_reel_repeats_the_master(self):
+    def test_untouched_reels_repeat_the_master(self):
         for index in range(5):
             self.assertEqual(self.stacks(index), {"2": 5, "4": 3})
 
-    def test_short_stacks_left_long_stacks_right(self):
+    def test_a_number_typed_by_hand_wins(self):
         """Ровно заказанный сценарий: двойки на первый рил, четвёрки на пятый."""
-        for reel, mult in enumerate((2.0, 1.5, 1.0, 0.5, 0.0)):
-            self.sets.set_pattern_length("id:4", 2, reel, mult)
-        for reel, mult in enumerate((0.0, 0.5, 1.0, 1.5, 2.0)):
-            self.sets.set_pattern_length("id:4", 4, reel, mult)
+        for reel, twos in enumerate((10, 8, 5, 3, 0)):
+            self.sets.set_pattern_count("id:4", 2, reel, twos)
+        for reel, fours in enumerate((0, 2, 3, 5, 6)):
+            self.sets.set_pattern_count("id:4", 4, reel, fours)
 
         self.assertEqual(self.stacks(0), {"2": 10})
         self.assertEqual(self.stacks(4), {"4": 6})
         self.assertEqual(self.stacks(2), {"2": 5, "4": 3})
 
     def test_zero_removes_only_that_length(self):
-        self.sets.set_pattern_length("id:4", 2, 0, 0)
+        self.sets.set_pattern_count("id:4", 2, 0, 0)
         self.assertEqual(self.stacks(0), {"4": 3})
 
-    def test_it_multiplies_with_the_overall_multiplier(self):
-        """Общий говорит «сколько всего», этот — «каких именно»."""
+    def test_empty_returns_the_cell_to_the_master(self):
+        self.sets.set_pattern_count("id:4", 2, 0, 12)
+        self.assertEqual(self.stacks(0)["2"], 12)
+        self.sets.set_pattern_count("id:4", 2, 0, "")
+        self.assertEqual(self.stacks(0)["2"], 5)
+
+    def test_hand_beats_the_overall_multiplier(self):
+        """Руками — значит руками: множитель заданную клетку не двигает."""
         self.sets.set_pattern("id:4", top=3)
         self.sets.set_pattern("id:4", reel=0, mult=2)
-        self.sets.set_pattern_length("id:4", 4, 0, 2)
-        self.assertEqual(self.stacks(0), {"2": 10, "4": 12})
+        self.sets.set_pattern_count("id:4", 2, 0, 7)
+        # двойки заданы руками, четвёрки достались множителю
+        self.assertEqual(self.stacks(0), {"2": 7, "4": 6})
 
     def test_other_symbols_are_untouched(self):
-        self.sets.set_pattern_length("id:4", 2, 0, 0)
+        self.sets.set_pattern_count("id:4", 2, 0, 0)
         reel = self.sets.effective_reels(self.doc())[0]
         self.assertEqual(reel["1"]["stacks"], {"2": 9, "3": 4})
 
@@ -273,30 +280,32 @@ class TestLengthPriority(MasterCase):
         self.sets.create_group("роялсы")
         for symbol_id in (1, 2):
             self.sets.set_group_member("роялсы", symbol_id)
-        self.sets.set_pattern_length("group:роялсы", 3, 0, 0)
+        self.sets.set_pattern_count("group:роялсы", 3, 0, 0)
         reel = self.sets.effective_reels(self.doc())[0]
         for key in ("1", "2"):
             self.assertEqual(reel[key]["stacks"], {"2": 9})
 
-    def test_ones_everywhere_is_not_stored(self):
-        """×1 на всех рилах — это «как в мастере», хранить нечего."""
-        self.sets.set_pattern_length("id:4", 2, 0, 1)
-        self.assertEqual(self.doc()["pattern"]["id:4"]["lengths"], {})
+    def test_clearing_the_last_cell_leaves_nothing_stored(self):
+        """Пустая строка целиком выбрасывается: «не трогал» ничего не весит."""
+        self.sets.set_pattern_count("id:4", 2, 0, 5)
+        self.assertEqual(self.doc()["pattern"]["id:4"]["counts"], {"2": [5, None, None, None, None]})
+        self.sets.set_pattern_count("id:4", 2, 0, "")
+        self.assertEqual(self.doc()["pattern"]["id:4"]["counts"], {})
 
     def test_garbage_and_bad_length_are_refused(self):
-        for length, mult in ((2, "много"), (0, 1), (-3, 1), (self.sets.MAX_STACK + 1, 1)):
+        for length, value in ((2, "много"), (0, 1), (-3, 1), (self.sets.MAX_STACK + 1, 1)):
             with self.assertRaises(self.sets.SymbolError):
-                self.sets.set_pattern_length("id:4", length, 0, mult)
+                self.sets.set_pattern_count("id:4", length, 0, value)
 
     def test_unknown_target_is_refused(self):
         with self.assertRaises(self.sets.SymbolError):
-            self.sets.set_pattern_length("id:999", 2, 0, 2)
+            self.sets.set_pattern_count("id:999", 2, 0, 2)
 
     def test_generated_strips_carry_the_priority(self):
-        for reel, mult in enumerate((2.0, 1.5, 1.0, 0.5, 0.0)):
-            self.sets.set_pattern_length("id:4", 2, reel, mult)
-        for reel, mult in enumerate((0.0, 0.5, 1.0, 1.5, 2.0)):
-            self.sets.set_pattern_length("id:4", 4, reel, mult)
+        for reel, twos in enumerate((10, 8, 5, 3, 0)):
+            self.sets.set_pattern_count("id:4", 2, reel, twos)
+        for reel, fours in enumerate((0, 2, 3, 5, 6)):
+            self.sets.set_pattern_count("id:4", 4, reel, fours)
         self.sets.generate()
 
         def runs(strip, symbol_id):
@@ -312,10 +321,12 @@ class TestLengthPriority(MasterCase):
         strips = self.doc()["strips"]
         self.assertEqual(set(runs(strips[0], 4)), {2}, "на первом риле только двойки")
         self.assertEqual(set(runs(strips[4], 4)), {4}, "на пятом только четвёрки")
+        self.assertEqual(len(runs(strips[0], 4)), 10)
+        self.assertEqual(len(runs(strips[4], 4)), 6)
 
-    def test_old_sets_without_lengths_open_clean(self):
+    def test_old_sets_without_counts_open_clean(self):
         name = self.sets.active_set()
         doc = self.sets._read(name)
         doc["pattern"] = {"id:4": {"max": 2, "mult": [1, 1, 1, 1, 1]}}
         self.sets._write(name, doc)
-        self.assertEqual(self.sets._read(name)["pattern"]["id:4"]["lengths"], {})
+        self.assertEqual(self.sets._read(name)["pattern"]["id:4"]["counts"], {})

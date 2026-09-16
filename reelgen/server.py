@@ -90,7 +90,7 @@ ROUTES = {
     "/api/master/group": service.master_group,
     "/api/master/clear": service.master_clear,
     "/api/pattern/set": service.pattern_set,
-    "/api/pattern/length": service.pattern_length,
+    "/api/pattern/count": service.pattern_count,
     "/api/play/spin": service.play_spin,
     "/api/play/simulate": service.play_simulate,
 }

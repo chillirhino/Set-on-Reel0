@@ -402,14 +402,14 @@ def pattern_set(payload: dict) -> dict:
     )
 
 
-def pattern_length(payload: dict) -> dict:
-    """Приоритет длины стека: цель, длина, рил, множитель."""
+def pattern_count(payload: dict) -> dict:
+    """Сколько стеков этой длины на этом риле. Пусто — как в мастере."""
     return _do(
-        lambda: symbols.set_pattern_length(
+        lambda: symbols.set_pattern_count(
             payload.get("target") or "",
             payload.get("length"),
             payload.get("reel"),
-            payload.get("mult"),
+            payload.get("value"),
         )
     )
 

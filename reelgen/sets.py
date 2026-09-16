@@ -466,27 +466,27 @@ def _fit_pattern(raw, reels: int) -> dict:
                 number = 1.0
             row.append(min(max(number, 0.0), top))
 
-        # приоритет длин: на каждую длину свой множитель на каждый рил.
-        # Отсутствие записи значит ×1, то есть «как в мастере».
-        lengths: dict[str, list[float]] = {}
-        for key, stored_row in (item.get("lengths") or {}).items():
+        # Приоритет стеков заданный руками: сколько стеков этой длины стоит на
+        # этом риле. None значит «не трогал» — берётся из мастера и правится
+        # общим множителем. Явное число бьёт и мастер, и множитель.
+        counts: dict[str, list] = {}
+        for key, stored_row in (item.get("counts") or {}).items():
             try:
                 length = int(key)
             except (TypeError, ValueError):
                 continue
             if not 1 <= length <= MAX_STACK or not isinstance(stored_row, list):
                 continue
-            skew = []
+            hand = []
             for index in range(reels):
                 try:
-                    number = float(stored_row[index])
+                    hand.append(min(max(int(stored_row[index]), 0), MAX_COUNT))
                 except (TypeError, ValueError, IndexError):
-                    number = 1.0
-                skew.append(min(max(number, 0.0), MAX_PATTERN))
-            if any(value != 1.0 for value in skew):  # ×1 везде — хранить нечего
-                lengths[str(length)] = skew
+                    hand.append(None)
+            if any(value is not None for value in hand):  # ничего не задано — не храним
+                counts[str(length)] = hand
 
-        fixed[f"{kind}:{value}"] = {"max": top, "mult": row, "lengths": lengths}
+        fixed[f"{kind}:{value}"] = {"max": top, "mult": row, "counts": counts}
     return fixed
 
 
@@ -1136,19 +1136,20 @@ def multiplier(doc: dict, symbol_id: int, reel: int) -> float:
         return 1.0
 
 
-def length_factor(doc: dict, symbol_id: int, reel: int, length) -> float:
-    """Приоритет конкретной длины стека на конкретном риле.
+def stack_override(doc: dict, symbol_id: int, reel: int, length) -> int | None:
+    """Сколько стеков этой длины задано руками на этом риле, или None.
 
-    Умножается на общий множитель цели: общий говорит «сколько всего стеков»,
-    этот — «каких именно». Двойки на первый рил, четвёрки на пятый — это он.
+    Явное число сильнее и мастера, и общего множителя: руками — значит руками.
+    Где не задано, работает мастер с множителем.
     """
     entry = doc["pattern"].get(target_of(doc, symbol_id))
     if not entry:
-        return 1.0
+        return None
     try:
-        return float(entry["lengths"][str(int(length))][reel])
+        value = entry["counts"][str(int(length))][reel]
     except (KeyError, IndexError, TypeError, ValueError):
-        return 1.0
+        return None
+    return None if value is None else int(value)
 
 
 def effective_reels(doc: dict) -> list[dict]:
@@ -1167,10 +1168,11 @@ def effective_reels(doc: dict) -> list[dict]:
             factor = multiplier(doc, int(key), index)
             # round() в Python округляет 4.5 к чётному, то есть к 4. Для
             # множителя это сюрприз: половина должна идти вверх.
-            scaled = {
-                length: int(times * factor * length_factor(doc, int(key), index, length) + 0.5)
-                for length, times in entry["stacks"].items()
-            }
+            scaled = {}
+            for length, times in entry["stacks"].items():
+                hand = stack_override(doc, int(key), index, length)
+                scaled[length] = times * factor + 0.5 if hand is None else hand
+                scaled[length] = int(scaled[length])
             scaled = {length: times for length, times in scaled.items() if times > 0}
             if not scaled:  # ползунок в нуле — символа на этом риле нет
                 continue
@@ -1263,15 +1265,16 @@ def set_pattern(target: str, reel=None, mult=None, top=None) -> dict:
     return _read(name)["pattern"]
 
 
-def set_pattern_length(target: str, length, reel, mult) -> dict:
-    """Приоритет одной длины стека на одном риле."""
+def set_pattern_count(target: str, length, reel, value) -> dict:
+    """Сколько стеков этой длины стоит на этом риле. Пусто — вернуть как в мастере."""
     name = active_set()
     doc = _read(name)
-    kind, _, value = str(target or "").partition(":")
+    # имя не `value`: параметр с этим именем уже занят количеством стеков
+    kind, _, value_key = str(target or "").partition(":")
     if kind == "id":
-        _find(doc["symbols"], int(value))
+        _find(doc["symbols"], int(value_key))
     elif kind == "group":
-        _find_group(doc["groups"], _clean_group(value))
+        _find_group(doc["groups"], _clean_group(value_key))
     else:
         raise SymbolError(f"непонятная цель паттерна {target!r}")
 
@@ -1281,25 +1284,29 @@ def set_pattern_length(target: str, length, reel, mult) -> dict:
         raise SymbolError(f"непонятная длина стека {length!r}") from exc
     if not 1 <= length <= MAX_STACK:
         raise SymbolError(f"длина {length} вне диапазона 1..{MAX_STACK}")
-    try:
-        number = float(str(mult).replace(",", "."))
-    except (TypeError, ValueError) as exc:
-        raise SymbolError(f"множитель {mult!r} — не число") from exc
+    text = str(value).strip() if value is not None else ""
+    if text in ("", "-"):
+        hand = None  # пусто — снова как в мастере
+    else:
+        try:
+            hand = max(0, int(float(text.replace(",", "."))))
+        except (TypeError, ValueError) as exc:
+            raise SymbolError(f"количество стеков {value!r} — не число") from exc
 
-    key = f"{kind}:{value}"
+    key = f"{kind}:{value_key}"
     entry = doc["pattern"].get(key) or {
         "max": 2,
         "mult": [1.0] * len(doc["reels"]),
-        "lengths": {},
+        "counts": {},
     }
     index = _reel_index(doc, reel)
-    rows = dict(entry.get("lengths") or {})
+    rows = dict(entry.get("counts") or {})
     row = list(rows.get(str(length)) or [])
     while len(row) < len(doc["reels"]):
-        row.append(1.0)
-    row[index] = number
+        row.append(None)
+    row[index] = hand
     rows[str(length)] = row
-    entry["lengths"] = rows
+    entry["counts"] = rows
     doc["pattern"][key] = entry
     _write(name, doc)
     return _read(name)["pattern"]

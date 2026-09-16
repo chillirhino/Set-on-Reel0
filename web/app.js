@@ -758,7 +758,9 @@ function patternEntry(key) {
     const value = Number(stored?.mult?.[reel]);
     mult.push(Number.isFinite(value) ? value : 1);
   }
-  return { max, mult };
+  // counts надо протащить как есть: собрав объект только из max и mult, таблица
+  // приоритета читала каждую клетку как «не трогал» и молча теряла ручной ввод
+  return { max, mult, counts: stored?.counts || {} };
 }
 
 function patternTargets() {
@@ -912,9 +914,12 @@ function renderPattern() {
   box.appendChild(list);
 }
 
-// Приоритет длин: строка на каждую длину, которая у цели есть в мастере,
-// клетка на каждый рил. Общий множитель говорит «сколько всего стеков», этот —
-// «каких именно»: двойки на первый рил, четвёрки на пятый.
+// Приоритет стеков: строка на каждую длину, которая у цели есть в мастере,
+// клетка на каждый рил. В клетке само число стеков, а не множитель: «десять
+// двоек на первом риле» читается прямо, а «×2» требует счёта в голове.
+//
+// Пусто — значит не трогал: берётся из мастера и правится общим множителем.
+// Вписанное число сильнее и мастера, и множителя.
 function masterStacks(target) {
   const store = state.master || {};
   const ids = target.group ? target.group.members : [target.symbol.id];
@@ -927,9 +932,9 @@ function masterStacks(target) {
   return merged;
 }
 
-function skewOf(entry, len, reel) {
-  const value = Number(entry.lengths?.[String(len)]?.[reel]);
-  return Number.isFinite(value) ? value : 1;
+function handOf(entry, len, reel) {
+  const value = entry.counts?.[String(len)]?.[reel];
+  return value === null || value === undefined ? null : Number(value);
 }
 
 function skewTable(target, entry) {
@@ -937,7 +942,7 @@ function skewTable(target, entry) {
   node.className = "skew";
 
   const head = document.createElement("h4");
-  head.textContent = "Приоритет длин стека по рилам";
+  head.textContent = "Приоритет стеков по рилам";
   const note = document.createElement("div");
   note.className = "avg";
   node.append(head, note);
@@ -949,8 +954,8 @@ function skewTable(target, entry) {
     return node;
   }
   note.textContent =
-    "×1 — как в мастере · умножается на общий множитель цели · " +
-    "под клеткой видно, сколько стеков этой длины выйдет";
+    "в клетке — сколько стеков этой длины ляжет на этот рил · " +
+    "пусто значит «как в мастере» · вписанное число сильнее общего множителя";
 
   const grid = document.createElement("div");
   grid.className = "skew-grid";
@@ -974,7 +979,7 @@ function skewTable(target, entry) {
     grid.appendChild(label);
 
     for (let reel = 0; reel < state.field.reels; reel++) {
-      grid.appendChild(skewCell(target, entry, stacks[len], len, reel));
+      grid.appendChild(handCell(target, entry, stacks[len], len, reel));
     }
   });
 
@@ -982,40 +987,49 @@ function skewTable(target, entry) {
   return node;
 }
 
-function skewCell(target, entry, base, len, reel) {
-  const skew = skewOf(entry, len, reel);
-  const overall = entry.mult[reel];
+function handCell(target, entry, base, len, reel) {
+  const hand = handOf(entry, len, reel);
+  // половина вверх — так же, как считает сервер
+  const inherited = Math.floor(base * entry.mult[reel] + 0.5);
 
   const cell = document.createElement("div");
-  cell.className = "skew-cell" + (skew === 1 ? "" : " on");
+  cell.className = "skew-cell" + (hand === null ? "" : " on");
 
   const input = document.createElement("input");
   input.type = "text";
-  input.inputMode = "decimal";
-  input.value = Number(skew.toFixed(2));
-  input.title = `множитель длины ${len} на риле ${reel + 1}`;
+  input.inputMode = "numeric";
+  // пустое поле с подсказкой-числом: сразу видно, что унаследовано
+  input.placeholder = String(inherited);
+  if (hand !== null) input.value = hand;
+  input.title =
+    `сколько стеков длиной ${len} на риле ${reel + 1}` +
+    `\nпусто — как в мастере (${inherited})`;
 
   const out = document.createElement("div");
   out.className = "skew-out";
-  const show = (value) => {
-    // половина вверх — так же, как считает сервер
-    const stacks = Math.floor(base * overall * value + 0.5);
+  const show = (stacks, own) => {
     out.innerHTML = stacks
-      ? `${stacks}×${len}<small>${stacks * len} симв.</small>`
-      : '<span class="zero">нет</span>';
+      ? `${stacks * len} симв.<small>${own ? "задано руками" : "из мастера"}</small>`
+      : '<span class="zero">нет на риле</span>';
     cell.classList.toggle("off", !stacks);
+    cell.classList.toggle("on", own);
   };
-  show(skew);
+  show(hand === null ? inherited : hand, hand !== null);
 
   input.onchange = () => {
-    const text = String(input.value).trim().replace(",", ".");
-    const value = text === "" ? NaN : Number(text);
-    if (!Number.isFinite(value) || value < 0) {
-      input.value = Number(skew.toFixed(2)); // опечатка не должна убирать длину
+    const text = String(input.value).trim();
+    if (text === "") {
+      show(inherited, false);
+      call("/api/pattern/count", { target: target.key, length: len, reel, value: "" });
       return;
     }
-    show(value);
-    call("/api/pattern/length", { target: target.key, length: len, reel, mult: value });
+    const value = Math.round(Number(text));
+    if (!Number.isFinite(value) || value < 0) {
+      input.value = hand === null ? "" : hand; // опечатка ничего не меняет
+      return;
+    }
+    show(value, true);
+    call("/api/pattern/count", { target: target.key, length: len, reel, value });
   };
 
   cell.append(input, out);

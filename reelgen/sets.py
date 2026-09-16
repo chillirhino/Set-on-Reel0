@@ -465,7 +465,28 @@ def _fit_pattern(raw, reels: int) -> dict:
             except (TypeError, ValueError, IndexError):
                 number = 1.0
             row.append(min(max(number, 0.0), top))
-        fixed[f"{kind}:{value}"] = {"max": top, "mult": row}
+
+        # приоритет длин: на каждую длину свой множитель на каждый рил.
+        # Отсутствие записи значит ×1, то есть «как в мастере».
+        lengths: dict[str, list[float]] = {}
+        for key, stored_row in (item.get("lengths") or {}).items():
+            try:
+                length = int(key)
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= length <= MAX_STACK or not isinstance(stored_row, list):
+                continue
+            skew = []
+            for index in range(reels):
+                try:
+                    number = float(stored_row[index])
+                except (TypeError, ValueError, IndexError):
+                    number = 1.0
+                skew.append(min(max(number, 0.0), MAX_PATTERN))
+            if any(value != 1.0 for value in skew):  # ×1 везде — хранить нечего
+                lengths[str(length)] = skew
+
+        fixed[f"{kind}:{value}"] = {"max": top, "mult": row, "lengths": lengths}
     return fixed
 
 
@@ -1115,6 +1136,21 @@ def multiplier(doc: dict, symbol_id: int, reel: int) -> float:
         return 1.0
 
 
+def length_factor(doc: dict, symbol_id: int, reel: int, length) -> float:
+    """Приоритет конкретной длины стека на конкретном риле.
+
+    Умножается на общий множитель цели: общий говорит «сколько всего стеков»,
+    этот — «каких именно». Двойки на первый рил, четвёрки на пятый — это он.
+    """
+    entry = doc["pattern"].get(target_of(doc, symbol_id))
+    if not entry:
+        return 1.0
+    try:
+        return float(entry["lengths"][str(int(length))][reel])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 1.0
+
+
 def effective_reels(doc: dict) -> list[dict]:
     """Что реально пойдёт в генерацию: либо ручные пять рилов, либо вывод мастера.
 
@@ -1132,7 +1168,8 @@ def effective_reels(doc: dict) -> list[dict]:
             # round() в Python округляет 4.5 к чётному, то есть к 4. Для
             # множителя это сюрприз: половина должна идти вверх.
             scaled = {
-                length: int(times * factor + 0.5) for length, times in entry["stacks"].items()
+                length: int(times * factor * length_factor(doc, int(key), index, length) + 0.5)
+                for length, times in entry["stacks"].items()
             }
             scaled = {length: times for length, times in scaled.items() if times > 0}
             if not scaled:  # ползунок в нуле — символа на этом риле нет
@@ -1221,6 +1258,48 @@ def set_pattern(target: str, reel=None, mult=None, top=None) -> dict:
         except (TypeError, ValueError) as exc:
             raise SymbolError(f"множитель {mult!r} — не число") from exc
         entry["mult"] = row
+    doc["pattern"][key] = entry
+    _write(name, doc)
+    return _read(name)["pattern"]
+
+
+def set_pattern_length(target: str, length, reel, mult) -> dict:
+    """Приоритет одной длины стека на одном риле."""
+    name = active_set()
+    doc = _read(name)
+    kind, _, value = str(target or "").partition(":")
+    if kind == "id":
+        _find(doc["symbols"], int(value))
+    elif kind == "group":
+        _find_group(doc["groups"], _clean_group(value))
+    else:
+        raise SymbolError(f"непонятная цель паттерна {target!r}")
+
+    try:
+        length = int(length)
+    except (TypeError, ValueError) as exc:
+        raise SymbolError(f"непонятная длина стека {length!r}") from exc
+    if not 1 <= length <= MAX_STACK:
+        raise SymbolError(f"длина {length} вне диапазона 1..{MAX_STACK}")
+    try:
+        number = float(str(mult).replace(",", "."))
+    except (TypeError, ValueError) as exc:
+        raise SymbolError(f"множитель {mult!r} — не число") from exc
+
+    key = f"{kind}:{value}"
+    entry = doc["pattern"].get(key) or {
+        "max": 2,
+        "mult": [1.0] * len(doc["reels"]),
+        "lengths": {},
+    }
+    index = _reel_index(doc, reel)
+    rows = dict(entry.get("lengths") or {})
+    row = list(rows.get(str(length)) or [])
+    while len(row) < len(doc["reels"]):
+        row.append(1.0)
+    row[index] = number
+    rows[str(length)] = row
+    entry["lengths"] = rows
     doc["pattern"][key] = entry
     _write(name, doc)
     return _read(name)["pattern"]

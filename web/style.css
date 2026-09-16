@@ -1614,3 +1614,73 @@ textarea {
 }
 
 .banner b { color: #fff3e0; }
+
+/* --- приоритет длин стека по рилам --- */
+
+.skew {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.skew h4 { margin: 0 0 2px; font-size: 13px; }
+.skew .avg { margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+
+/* Колонок ровно по числу рилов, ширины равные — клетки одной длины стоят
+   строго друг под другом, иначе таблицу не прочитать. */
+.skew-grid {
+  display: grid;
+  grid-template-columns: 96px repeat(var(--reels), minmax(84px, 1fr));
+  gap: 6px;
+  align-items: stretch;
+}
+
+.skew-corner,
+.skew-head {
+  align-self: end;
+  padding-bottom: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  text-align: center;
+}
+
+.skew-corner { text-align: left; }
+
+.skew-len {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.skew-len small { color: var(--muted); font-size: 10px; font-weight: 400; }
+
+.skew-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.skew-cell.on { border-color: var(--accent); }
+.skew-cell.off { opacity: .5; border-style: dashed; }
+
+.skew-cell input {
+  width: 100%;
+  padding: 3px 4px;
+  text-align: center;
+  font: 700 13px/1.3 inherit;
+}
+
+.skew-cell input:focus { outline: none; border-color: var(--accent); }
+
+.skew-out { text-align: center; color: var(--accent); font-size: 11px; font-weight: 600; }
+.skew-out small { display: block; color: var(--muted); font-size: 10px; font-weight: 400; }
+.skew-out .zero { color: var(--danger); }

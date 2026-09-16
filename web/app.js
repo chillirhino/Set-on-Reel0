@@ -77,6 +77,122 @@ async function api(path, payload) {
   return data;
 }
 
+// --- папка картриджа на диске -----------------------------------------------
+//
+// Браузер умеет открывать папку с диска (File System Access API) и читать-писать
+// в ней файлы. Формат папки — тот же, что у сета на сервере: set.json рядом с
+// images/, поэтому нынешние sets/<имя>/ открываются как есть.
+//
+// Сервер при этом остаётся оболочкой: он считает и симулирует, а durable-копия
+// лежит у пользователя. Переписывать хранилище не пришлось — нужные операции
+// уже были: /api/sets/export отдаёт сет одним объектом с картинками в base64,
+// /api/sets/import разворачивает такой объект обратно.
+//
+// Работает в Chrome и Edge; в Safari и Firefox showDirectoryPicker нет, поэтому
+// кнопки просто не показываются и остаётся «Экспорт/Импорт файлом».
+
+let folderHandle = null;
+const FOLDER_SUPPORTED = typeof window.showDirectoryPicker === "function";
+
+function renderFolder() {
+  const open = $("btn-folder-open");
+  const save = $("btn-folder-save");
+  if (!open || !save) return;
+  open.classList.toggle("hidden", !FOLDER_SUPPORTED);
+  save.classList.toggle("hidden", !FOLDER_SUPPORTED || !folderHandle);
+  if (folderHandle) {
+    open.textContent = `Папка: ${folderHandle.name}`;
+    save.textContent = `Сохранить в «${folderHandle.name}»`;
+  } else {
+    open.textContent = "Открыть папку";
+  }
+}
+
+async function readFolderBundle(handle) {
+  const doc = await handle.getFileHandle("set.json").then((h) => h.getFile());
+  const bundle = {
+    format: "reelgen-set",
+    version: 1,
+    name: handle.name,
+    set: JSON.parse(await doc.text()),
+    images: {},
+  };
+
+  // Картинки лежат в images/ и едут в base64 — ровно как в файле выгрузки.
+  // Отсутствие папки допустимо, а сбой чтения отдельного файла — нет, поэтому
+  // ловим только первое: широкий catch однажды уже съел настоящую ошибку.
+  let images = null;
+  try {
+    images = await handle.getDirectoryHandle("images");
+  } catch {
+    return bundle; // сет без картинок
+  }
+
+  for await (const [name, entry] of images.entries()) {
+    if (entry.kind !== "file") continue;
+    const buffer = await (await entry.getFile()).arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    bundle.images[name] = btoa(binary);
+  }
+  return bundle;
+}
+
+async function writeFile(dir, name, contents) {
+  const handle = await dir.getFileHandle(name, { create: true });
+  const stream = await handle.createWritable();
+  await stream.write(contents);
+  await stream.close();
+}
+
+$("btn-folder-open").onclick = async () => {
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    const bundle = await readFolderBundle(handle);
+    state = await api("/api/sets/import", { bundle, name: handle.name });
+    folderHandle = handle;
+    render();
+    say(`картридж «${handle.name}» открыт с диска`, true);
+  } catch (error) {
+    if (error?.name === "AbortError") return; // просто закрыл диалог
+    say(
+      error?.name === "NotFoundError"
+        ? "в папке нет set.json — выбери папку картриджа, а не её родителя"
+        : error.message
+    );
+  }
+};
+
+$("btn-folder-save").onclick = async () => {
+  if (!folderHandle) return;
+  try {
+    const dump = await api("/api/sets/export", { name: state.active });
+    const bundle = dump.bundle;
+    await writeFile(
+      folderHandle,
+      "set.json",
+      JSON.stringify(bundle.set, null, 2)
+    );
+
+    const names = Object.keys(bundle.images || {});
+    if (names.length) {
+      const images = await folderHandle.getDirectoryHandle("images", { create: true });
+      for (const name of names) {
+        const binary = atob(bundle.images[name]);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        await writeFile(images, name, bytes);
+      }
+    }
+    // ленты плоским текстом — тем же файлом, что пишет сервер локально
+    await writeFile(folderHandle, "strips.txt", state.strips.map((s) => s.join(" ")).join("\n") + "\n");
+    say(`записано в «${folderHandle.name}»: set.json, ${names.length} картинок, strips.txt`, true);
+  } catch (error) {
+    say(`не удалось записать: ${error.message}`);
+  }
+};
+
 // На хостинге хранилище живёт до следующего деплоя, и об этом надо сказать
 // заранее, а не после потери работы. Локально баннера нет.
 async function checkEnv() {
@@ -127,6 +243,7 @@ function render() {
 }
 
 function renderSets() {
+  renderFolder();
   setSelect.textContent = "";
   state.sets.forEach((name) => {
     const option = document.createElement("option");
@@ -764,6 +881,7 @@ function renderPattern() {
   }
   body.append(board, mixChart(targets, target));
   box.appendChild(body);
+  box.appendChild(skewTable(target, entry));
 
   const list = document.createElement("div");
   list.className = "pattern-list";
@@ -792,6 +910,116 @@ function renderPattern() {
     list.appendChild(chip);
   });
   box.appendChild(list);
+}
+
+// Приоритет длин: строка на каждую длину, которая у цели есть в мастере,
+// клетка на каждый рил. Общий множитель говорит «сколько всего стеков», этот —
+// «каких именно»: двойки на первый рил, четвёрки на пятый.
+function masterStacks(target) {
+  const store = state.master || {};
+  const ids = target.group ? target.group.members : [target.symbol.id];
+  const merged = {};
+  ids.forEach((id) => {
+    Object.entries(store[String(id)]?.stacks || {}).forEach(([len, times]) => {
+      merged[len] = Math.max(merged[len] || 0, Number(times) || 0);
+    });
+  });
+  return merged;
+}
+
+function skewOf(entry, len, reel) {
+  const value = Number(entry.lengths?.[String(len)]?.[reel]);
+  return Number.isFinite(value) ? value : 1;
+}
+
+function skewTable(target, entry) {
+  const node = document.createElement("div");
+  node.className = "skew";
+
+  const head = document.createElement("h4");
+  head.textContent = "Приоритет длин стека по рилам";
+  const note = document.createElement("div");
+  note.className = "avg";
+  node.append(head, note);
+
+  const stacks = masterStacks(target);
+  const lengths = Object.keys(stacks).map(Number).sort((a, b) => a - b);
+  if (!lengths.length) {
+    note.textContent = "у цели нет стеков в мастер-риле — сначала задай их на «Лентах»";
+    return node;
+  }
+  note.textContent =
+    "×1 — как в мастере · умножается на общий множитель цели · " +
+    "под клеткой видно, сколько стеков этой длины выйдет";
+
+  const grid = document.createElement("div");
+  grid.className = "skew-grid";
+  grid.style.setProperty("--reels", String(state.field.reels));
+
+  const corner = document.createElement("div");
+  corner.className = "skew-corner";
+  corner.textContent = "длина";
+  grid.appendChild(corner);
+  for (let reel = 0; reel < state.field.reels; reel++) {
+    const label = document.createElement("div");
+    label.className = "skew-head";
+    label.textContent = `Рил ${reel + 1}`;
+    grid.appendChild(label);
+  }
+
+  lengths.forEach((len) => {
+    const label = document.createElement("div");
+    label.className = "skew-len";
+    label.innerHTML = `×${len}<small>${stacks[len]} в мастере</small>`;
+    grid.appendChild(label);
+
+    for (let reel = 0; reel < state.field.reels; reel++) {
+      grid.appendChild(skewCell(target, entry, stacks[len], len, reel));
+    }
+  });
+
+  node.appendChild(grid);
+  return node;
+}
+
+function skewCell(target, entry, base, len, reel) {
+  const skew = skewOf(entry, len, reel);
+  const overall = entry.mult[reel];
+
+  const cell = document.createElement("div");
+  cell.className = "skew-cell" + (skew === 1 ? "" : " on");
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.value = Number(skew.toFixed(2));
+  input.title = `множитель длины ${len} на риле ${reel + 1}`;
+
+  const out = document.createElement("div");
+  out.className = "skew-out";
+  const show = (value) => {
+    // половина вверх — так же, как считает сервер
+    const stacks = Math.floor(base * overall * value + 0.5);
+    out.innerHTML = stacks
+      ? `${stacks}×${len}<small>${stacks * len} симв.</small>`
+      : '<span class="zero">нет</span>';
+    cell.classList.toggle("off", !stacks);
+  };
+  show(skew);
+
+  input.onchange = () => {
+    const text = String(input.value).trim().replace(",", ".");
+    const value = text === "" ? NaN : Number(text);
+    if (!Number.isFinite(value) || value < 0) {
+      input.value = Number(skew.toFixed(2)); // опечатка не должна убирать длину
+      return;
+    }
+    show(value);
+    call("/api/pattern/length", { target: target.key, length: len, reel, mult: value });
+  };
+
+  cell.append(input, out);
+  return cell;
 }
 
 // Состав рилов столбцами: на каждый рил столбец в полную высоту, поделённый на

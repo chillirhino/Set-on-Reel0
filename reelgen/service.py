@@ -402,6 +402,18 @@ def pattern_set(payload: dict) -> dict:
     )
 
 
+def pattern_length(payload: dict) -> dict:
+    """Приоритет длины стека: цель, длина, рил, множитель."""
+    return _do(
+        lambda: symbols.set_pattern_length(
+            payload.get("target") or "",
+            payload.get("length"),
+            payload.get("reel"),
+            payload.get("mult"),
+        )
+    )
+
+
 # --- группы символов ----------------------------------------------------------
 
 

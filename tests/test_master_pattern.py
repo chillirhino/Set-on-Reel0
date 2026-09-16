@@ -227,52 +227,87 @@ if __name__ == "__main__":
 
 
 class TestStackPriority(MasterCase):
-    """Приоритет стеков: сколько стеков какой длины стоит на каком риле."""
+    """Приоритет стеков делит итог по риле, а не задаёт его.
+
+    Итог назначает общий множитель; панель приоритета только перераспределяет
+    его между длинами. Поднять одну длину можно лишь за счёт остальных.
+    """
 
     def setUp(self):
         super().setUp()
-        # вайлд-подобный набор: 5 двоек и 3 четвёрки
-        self.sets.set_master_symbol(4, {"2": 5, "4": 3}, False)
+        # ровно пример из постановки: 2×5 / 3×3 / 4×1 — девять стеков
+        self.sets.set_master_symbol(4, {"2": 5, "3": 3, "4": 1}, False)
         self.sets.set_master_mode(True)
+        self.sets.set_pattern("id:4", top=3)
 
-    def stacks(self, reel_index):
-        return self.sets.effective_reels(self.doc())[reel_index].get("4", {}).get("stacks", {})
+    def split(self, reel):
+        return self.sets.stack_split(self.doc(), 4, reel)
+
+    def total(self, reel):
+        return self.sets.stack_total(self.doc(), 4, reel)
 
     def test_untouched_reels_repeat_the_master(self):
         for index in range(5):
-            self.assertEqual(self.stacks(index), {"2": 5, "4": 3})
+            self.assertEqual(self.split(index), {"2": 5, "3": 3, "4": 1})
 
-    def test_a_number_typed_by_hand_wins(self):
-        """Ровно заказанный сценарий: двойки на первый рил, четвёрки на пятый."""
-        for reel, twos in enumerate((10, 8, 5, 3, 0)):
-            self.sets.set_pattern_count("id:4", 2, reel, twos)
-        for reel, fours in enumerate((0, 2, 3, 5, 6)):
-            self.sets.set_pattern_count("id:4", 4, reel, fours)
-
-        self.assertEqual(self.stacks(0), {"2": 10})
-        self.assertEqual(self.stacks(4), {"4": 6})
-        self.assertEqual(self.stacks(2), {"2": 5, "4": 3})
-
-    def test_zero_removes_only_that_length(self):
-        self.sets.set_pattern_count("id:4", 2, 0, 0)
-        self.assertEqual(self.stacks(0), {"4": 3})
-
-    def test_empty_returns_the_cell_to_the_master(self):
-        self.sets.set_pattern_count("id:4", 2, 0, 12)
-        self.assertEqual(self.stacks(0)["2"], 12)
-        self.sets.set_pattern_count("id:4", 2, 0, "")
-        self.assertEqual(self.stacks(0)["2"], 5)
-
-    def test_hand_beats_the_overall_multiplier(self):
-        """Руками — значит руками: множитель заданную клетку не двигает."""
-        self.sets.set_pattern("id:4", top=3)
+    def test_the_multiplier_scales_every_length(self):
+        """×2 от 5/3/1 это 10/6/2 — восемнадцать стеков."""
         self.sets.set_pattern("id:4", reel=0, mult=2)
-        self.sets.set_pattern_count("id:4", 2, 0, 7)
-        # двойки заданы руками, четвёрки достались множителю
-        self.assertEqual(self.stacks(0), {"2": 7, "4": 6})
+        self.assertEqual(self.split(0), {"2": 10, "3": 6, "4": 2})
+        self.assertEqual(self.total(0), 18)
+
+    def test_half_goes_up_per_length(self):
+        """×1.5 от 5/3/1: 7.5→8, 4.5→5, 1.5→2 — пятнадцать стеков."""
+        self.sets.set_pattern("id:4", reel=0, mult=1.5)
+        self.assertEqual(self.split(0), {"2": 8, "3": 5, "4": 2})
+        self.assertEqual(self.total(0), 15)
+
+    def test_raising_one_length_lowers_the_others(self):
+        self.sets.set_pattern("id:4", reel=0, mult=2)
+        self.sets.set_pattern_count("id:4", 2, 0, 16)
+        split = self.split(0)
+        self.assertEqual(split["2"], 16)
+        self.assertEqual(sum(split.values()), 18, "стеков должно остаться столько же")
+        self.assertLess(split["3"], 6)
+
+    def test_the_stack_total_never_moves(self):
+        self.sets.set_pattern("id:4", reel=0, mult=2)
+        for wanted in (0, 3, 9, 14, 18):
+            self.sets.set_pattern_count("id:4", 2, 0, wanted)
+            self.assertEqual(sum(self.split(0).values()), 18, f"просили {wanted}")
+
+    def test_symbols_move_even_though_stacks_do_not(self):
+        """В этом и смысл: короткие стеки дешевле длинных при том же числе."""
+        self.sets.set_pattern("id:4", reel=0, mult=2)
+        before = sum(int(k) * v for k, v in self.split(0).items())
+        self.sets.set_pattern_count("id:4", 2, 0, 18)
+        after = sum(int(k) * v for k, v in self.split(0).items())
+        self.assertLess(after, before)
+        self.assertEqual(after, 36)
+
+    def test_asking_for_more_than_the_total_is_capped(self):
+        self.sets.set_pattern("id:4", reel=0, mult=2)
+        self.sets.set_pattern_count("id:4", 2, 0, 500)
+        self.assertEqual(self.split(0), {"2": 18, "3": 0, "4": 0})
+
+    def test_reset_takes_the_master_proportions_back(self):
+        self.sets.set_pattern("id:4", reel=0, mult=2)
+        self.sets.set_pattern_count("id:4", 2, 0, 16)
+        self.sets.reset_pattern("id:4")
+        self.assertEqual(self.split(0), {"2": 10, "3": 6, "4": 2})
+
+    def test_empty_returns_the_whole_reel_to_the_master(self):
+        self.sets.set_pattern_count("id:4", 2, 0, 8)
+        self.sets.set_pattern_count("id:4", 2, 0, "")
+        self.assertEqual(self.split(0), {"2": 5, "3": 3, "4": 1})
+
+    def test_reels_are_independent(self):
+        self.sets.set_pattern_count("id:4", 2, 0, 9)
+        self.assertEqual(self.split(0)["2"], 9)
+        self.assertEqual(self.split(1), {"2": 5, "3": 3, "4": 1})
 
     def test_other_symbols_are_untouched(self):
-        self.sets.set_pattern_count("id:4", 2, 0, 0)
+        self.sets.set_pattern_count("id:4", 2, 0, 9)
         reel = self.sets.effective_reels(self.doc())[0]
         self.assertEqual(reel["1"]["stacks"], {"2": 9, "3": 4})
 
@@ -280,20 +315,17 @@ class TestStackPriority(MasterCase):
         self.sets.create_group("роялсы")
         for symbol_id in (1, 2):
             self.sets.set_group_member("роялсы", symbol_id)
-        self.sets.set_pattern_count("group:роялсы", 3, 0, 0)
+        self.sets.set_pattern_count("group:роялсы", 3, 0, 13)
         reel = self.sets.effective_reels(self.doc())[0]
         for key in ("1", "2"):
-            self.assertEqual(reel[key]["stacks"], {"2": 9})
+            self.assertEqual(reel[key]["stacks"], {"3": 13})
 
-    def test_clearing_the_last_cell_leaves_nothing_stored(self):
-        """Пустая строка целиком выбрасывается: «не трогал» ничего не весит."""
-        self.sets.set_pattern_count("id:4", 2, 0, 5)
-        self.assertEqual(self.doc()["pattern"]["id:4"]["counts"], {"2": [5, None, None, None, None]})
-        self.sets.set_pattern_count("id:4", 2, 0, "")
-        self.assertEqual(self.doc()["pattern"]["id:4"]["counts"], {})
+    def test_a_length_the_master_does_not_have_is_refused(self):
+        with self.assertRaises(self.sets.SymbolError):
+            self.sets.set_pattern_count("id:4", 5, 0, 3)
 
-    def test_garbage_and_bad_length_are_refused(self):
-        for length, value in ((2, "много"), (0, 1), (-3, 1), (self.sets.MAX_STACK + 1, 1)):
+    def test_garbage_is_refused(self):
+        for length, value in ((2, "много"), (0, 1), (-3, 1)):
             with self.assertRaises(self.sets.SymbolError):
                 self.sets.set_pattern_count("id:4", length, 0, value)
 
@@ -302,10 +334,8 @@ class TestStackPriority(MasterCase):
             self.sets.set_pattern_count("id:999", 2, 0, 2)
 
     def test_generated_strips_carry_the_priority(self):
-        for reel, twos in enumerate((10, 8, 5, 3, 0)):
-            self.sets.set_pattern_count("id:4", 2, reel, twos)
-        for reel, fours in enumerate((0, 2, 3, 5, 6)):
-            self.sets.set_pattern_count("id:4", 4, reel, fours)
+        self.sets.set_pattern_count("id:4", 2, 0, 9)
+        self.sets.set_pattern_count("id:4", 4, 4, 9)
         self.sets.generate()
 
         def runs(strip, symbol_id):
@@ -321,8 +351,6 @@ class TestStackPriority(MasterCase):
         strips = self.doc()["strips"]
         self.assertEqual(set(runs(strips[0], 4)), {2}, "на первом риле только двойки")
         self.assertEqual(set(runs(strips[4], 4)), {4}, "на пятом только четвёрки")
-        self.assertEqual(len(runs(strips[0], 4)), 10)
-        self.assertEqual(len(runs(strips[4], 4)), 6)
 
     def test_old_sets_without_counts_open_clean(self):
         name = self.sets.active_set()

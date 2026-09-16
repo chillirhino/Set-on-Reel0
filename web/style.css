@@ -1724,3 +1724,16 @@ textarea {
 }
 
 .skew-cell.off .hand-slider::-webkit-slider-thumb { background: var(--muted); }
+
+/* заголовок таблицы приоритета с кнопкой возврата к мастеру */
+.skew-head-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 2px;
+}
+
+.skew-head-row h4 { margin: 0; font-size: 13px; }
+.skew-head-row .btn { padding: 4px 10px; font-size: 12px; }
+
+.skew-head small { display: block; color: var(--text); font-size: 11px; font-weight: 600; }

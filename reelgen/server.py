@@ -91,6 +91,7 @@ ROUTES = {
     "/api/master/clear": service.master_clear,
     "/api/pattern/set": service.pattern_set,
     "/api/pattern/count": service.pattern_count,
+    "/api/pattern/reset": service.pattern_reset,
     "/api/play/spin": service.play_spin,
     "/api/play/simulate": service.play_simulate,
 }

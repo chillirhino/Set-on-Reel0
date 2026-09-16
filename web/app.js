@@ -932,17 +932,57 @@ function masterStacks(target) {
   return merged;
 }
 
-function handOf(entry, len, reel) {
-  const value = entry.counts?.[String(len)]?.[reel];
-  return value === null || value === undefined ? null : Number(value);
+// Делим целое число стеков по долям тем же способом, что и сервер: целые части
+// плюс остаток тем, у кого дробный хвост длиннее. Иначе предпросмотр при
+// перетаскивании расходился бы с тем, что запишется.
+function apportion(total, shares) {
+  const keys = Object.keys(shares);
+  const weight = keys.reduce((sum, key) => sum + Math.max(shares[key], 0), 0);
+  if (total <= 0 || weight <= 0) return Object.fromEntries(keys.map((key) => [key, 0]));
+  const exact = {};
+  const out = {};
+  keys.forEach((key) => {
+    exact[key] = (total * Math.max(shares[key], 0)) / weight;
+    out[key] = Math.floor(exact[key]);
+  });
+  let left = total - keys.reduce((sum, key) => sum + out[key], 0);
+  keys
+    .slice()
+    .sort((a, b) => exact[b] - out[b] - (exact[a] - out[a]) || Number(a) - Number(b))
+    .forEach((key) => {
+      if (left-- > 0) out[key] += 1;
+    });
+  return out;
+}
+
+// Текущая раскладка цели на риле — из derived, то есть из того, что сервер
+// реально отдаст генератору. Длины с нулём там опущены, поэтому дополняем их
+// из мастера: в таблице строка должна быть даже когда стеков нет.
+function splitOf(target, reel, lengths) {
+  const id = target.group ? target.group.members[0] : target.symbol.id;
+  const stored = state.derived?.[reel]?.[String(id)]?.stacks || {};
+  const split = {};
+  lengths.forEach((len) => {
+    split[String(len)] = Number(stored[String(len)]) || 0;
+  });
+  return split;
 }
 
 function skewTable(target, entry) {
   const node = document.createElement("div");
   node.className = "skew";
 
-  const head = document.createElement("h4");
-  head.textContent = "Приоритет стеков по рилам";
+  const head = document.createElement("div");
+  head.className = "skew-head-row";
+  const title = document.createElement("h4");
+  title.textContent = "Приоритет стеков по рилам";
+  const reset = document.createElement("button");
+  reset.className = "btn";
+  reset.textContent = "Взять из мастера";
+  reset.title = "вернуть раскладку по длинам к пропорциям мастер-рила";
+  reset.onclick = () => call("/api/pattern/reset", { target: target.key });
+  head.append(title, reset);
+
   const note = document.createElement("div");
   note.className = "avg";
   node.append(head, note);
@@ -954,8 +994,8 @@ function skewTable(target, entry) {
     return node;
   }
   note.textContent =
-    "сколько стеков этой длины ляжет на этот рил — тяни или впиши · " +
-    "пусто значит «как в мастере» · заданное сильнее общего множителя";
+    "число стеков на риле задаёт общий множитель — здесь оно только делится между " +
+    "длинами: поднять одну можно за счёт остальных";
 
   const grid = document.createElement("div");
   grid.className = "skew-grid";
@@ -965,10 +1005,16 @@ function skewTable(target, entry) {
   corner.className = "skew-corner";
   corner.textContent = "длина";
   grid.appendChild(corner);
+
+  const columns = [];
   for (let reel = 0; reel < state.field.reels; reel++) {
+    const split = splitOf(target, reel, lengths);
+    const total = lengths.reduce((sum, len) => sum + split[String(len)], 0);
+    columns.push({ reel, split, total, cells: {} });
+
     const label = document.createElement("div");
     label.className = "skew-head";
-    label.textContent = `Рил ${reel + 1}`;
+    label.innerHTML = `Рил ${reel + 1}<small>${total} стеков</small>`;
     grid.appendChild(label);
   }
 
@@ -977,92 +1023,91 @@ function skewTable(target, entry) {
     label.className = "skew-len";
     label.innerHTML = `×${len}<small>${stacks[len]} в мастере</small>`;
     grid.appendChild(label);
-
-    for (let reel = 0; reel < state.field.reels; reel++) {
-      grid.appendChild(handCell(target, entry, stacks[len], len, reel));
-    }
+    columns.forEach((column) => grid.appendChild(handCell(target, column, len)));
   });
 
   node.appendChild(grid);
   return node;
 }
 
-function handCell(target, entry, base, len, reel) {
-  const hand = handOf(entry, len, reel);
-  // половина вверх — так же, как считает сервер
-  const inherited = Math.floor(base * entry.mult[reel] + 0.5);
-
+function handCell(target, column, len) {
+  const key = String(len);
   const cell = document.createElement("div");
-  cell.className = "skew-cell" + (hand === null ? "" : " on");
+  cell.className = "skew-cell";
 
   const input = document.createElement("input");
   input.type = "text";
   input.inputMode = "numeric";
-  // пустое поле с подсказкой-числом: сразу видно, что унаследовано
-  input.placeholder = String(inherited);
-  if (hand !== null) input.value = hand;
-  input.title =
-    `сколько стеков длиной ${len} на риле ${reel + 1}` +
-    `\nпусто — как в мастере (${inherited})`;
+  input.value = column.split[key];
 
-  const shown = hand === null ? inherited : hand;
-
-  // Предел шкалы с запасом от текущего значения, иначе ползунок упирался бы
-  // сразу: количества тут доходят до сотни.
   const slider = document.createElement("input");
   slider.type = "range";
   slider.className = "hand-slider";
   slider.min = "0";
-  slider.max = String(Math.max(30, inherited * 3, shown * 2));
+  slider.max = String(column.total);
   slider.step = "1";
-  slider.value = String(shown);
-  slider.title = `тяни, чтобы задать число стеков длиной ${len}`;
+  slider.value = String(column.split[key]);
+  slider.title =
+    `стеков длиной ${len} на риле ${column.reel + 1} — тяни или впиши` +
+    `\nвсего на риле ${column.total}, поднимется за счёт остальных длин`;
 
   const out = document.createElement("div");
   out.className = "skew-out";
-  const show = (stacks, own) => {
-    out.innerHTML = stacks
-      ? `${stacks * len} симв.<small>${own ? "задано руками" : "из мастера"}</small>`
-      : '<span class="zero">нет на риле</span>';
-    cell.classList.toggle("off", !stacks);
-    cell.classList.toggle("on", own);
-  };
-  show(shown, hand !== null);
+  cell.append(input, slider, out);
+  column.cells[key] = { cell, input, slider, out, len };
 
-  const commit = (value) => call("/api/pattern/count", { target: target.key, length: len, reel, value });
+  paintCell(column, key);
+  const commit = (value) =>
+    call("/api/pattern/count", { target: target.key, length: len, reel: column.reel, value });
 
-  // пока тянут — считаем на месте; запись уходит по отпусканию
-  slider.oninput = () => {
-    const value = Number(slider.value);
-    input.value = value;
-    show(value, true);
-  };
+  // тянем — остальные длины расходятся сами, запись уходит по отпусканию
+  slider.oninput = () => rebalance(column, key, Number(slider.value));
   slider.onchange = () => commit(Number(slider.value));
 
   input.onchange = () => {
     const text = String(input.value).trim();
-    if (text === "") {
-      slider.value = String(inherited);
-      show(inherited, false);
-      commit("");
-      return;
-    }
-    const value = Math.round(Number(text));
+    const value = text === "" ? NaN : Math.round(Number(text));
     if (!Number.isFinite(value) || value < 0) {
-      input.value = hand === null ? "" : hand; // опечатка ничего не меняет
-      slider.value = String(shown);
+      input.value = column.split[key]; // опечатка ничего не двигает
       return;
     }
-    slider.value = String(Math.min(value, Number(slider.max)));
-    show(value, true);
-    commit(value);
+    rebalance(column, key, Math.min(value, column.total));
+    commit(Math.min(value, column.total));
   };
 
-  cell.append(input, slider, out);
   return cell;
 }
 
-// Состав рилов столбцами: на каждый рил столбец в полную высоту, поделённый на
+function paintCell(column, key) {
+  const { cell, input, slider, out, len } = column.cells[key];
+  const value = column.split[key];
+  input.value = value;
+  slider.value = String(value);
+  out.innerHTML = value
+    ? `${value * len} симв.`
+    : '<span class="zero">нет на риле</span>';
+  cell.classList.toggle("off", !value);
+}
+
+function rebalance(column, key, wanted) {
+  const others = {};
+  Object.keys(column.split).forEach((other) => {
+    if (other !== key) others[other] = column.split[other];
+  });
+  const names = Object.keys(others);
+  if (!names.length) {
+    column.split[key] = column.total;
+  } else {
+    const pool = names.reduce((sum, name) => sum + others[name], 0);
+    const weights = pool > 0 ? others : Object.fromEntries(names.map((n) => [n, 1]));
+    const spread = apportion(column.total - wanted, weights);
+    Object.assign(column.split, spread);
+    column.split[key] = wanted;
+  }
+  Object.keys(column.cells).forEach((name) => paintCell(column, name));
+}
+
+// Состав рилов столбцами:// Состав рилов столбцами: на каждый рил столбец в полную высоту, поделённый на
 // доли целей. Считается из state.derived — того, что сервер реально отдаст
 // генератору. Второй реализации тех же правил здесь быть не должно: она рано
 // или поздно разошлась бы с настоящей.

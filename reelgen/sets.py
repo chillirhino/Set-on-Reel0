@@ -1136,20 +1136,70 @@ def multiplier(doc: dict, symbol_id: int, reel: int) -> float:
         return 1.0
 
 
-def stack_override(doc: dict, symbol_id: int, reel: int, length) -> int | None:
-    """Сколько стеков этой длины задано руками на этом риле, или None.
+def stack_total(doc: dict, symbol_id: int, reel: int) -> int:
+    """Сколько всего стеков у символа на этом риле.
 
-    Явное число сильнее и мастера, и общего множителя: руками — значит руками.
-    Где не задано, работает мастер с множителем.
+    Мастер, умноженный общим множителем, с округлением **по каждой длине
+    отдельно и половиной вверх**: 5/3/1 при ×1.5 даёт 8/5/2, то есть 15 стеков,
+    а не 13.5.
     """
+    stacks = (doc["master"].get(str(symbol_id)) or {}).get("stacks") or {}
+    factor = multiplier(doc, symbol_id, reel)
+    return sum(int(int(times) * factor + 0.5) for times in stacks.values())
+
+
+def _apportion(total: int, shares: dict) -> dict[str, int]:
+    """Делим целое число стеков по долям, ничего не теряя.
+
+    Метод наибольших остатков: раздаём целые части, а остаток — тем, у кого
+    дробный хвост длиннее. Сумма всегда ровно total.
+    """
+    weight = sum(max(float(value), 0.0) for value in shares.values())
+    if total <= 0 or weight <= 0:
+        return {key: 0 for key in shares}
+    exact = {key: total * max(float(value), 0.0) / weight for key, value in shares.items()}
+    out = {key: int(value) for key, value in exact.items()}
+    left = total - sum(out.values())
+    order = sorted(exact, key=lambda key: (-(exact[key] - out[key]), int(key)))
+    for key in order[:left]:
+        out[key] += 1
+    return out
+
+
+def _shares(doc: dict, symbol_id: int, reel: int) -> dict[str, float] | None:
+    """Заданное руками распределение долей на этом риле, если оно есть."""
     entry = doc["pattern"].get(target_of(doc, symbol_id))
     if not entry:
         return None
-    try:
-        value = entry["counts"][str(int(length))][reel]
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None
-    return None if value is None else int(value)
+    stacks = (doc["master"].get(str(symbol_id)) or {}).get("stacks") or {}
+    found: dict[str, float] = {}
+    for length in stacks:
+        try:
+            value = entry["counts"][str(length)][reel]
+        except (KeyError, IndexError, TypeError):
+            value = None
+        if value is not None:
+            found[str(length)] = float(value)
+    return found if len(found) == len(stacks) and stacks else None
+
+
+def stack_split(doc: dict, symbol_id: int, reel: int) -> dict[str, int]:
+    """Как стеки символа разложены по длинам на этом риле.
+
+    Итог задаёт общий множитель, а панель приоритета только перераспределяет его
+    между длинами: поднять одну длину можно лишь за счёт остальных. Символов от
+    этого станет больше или меньше, но число стеков не изменится.
+
+    Приоритет не задан — делим в пропорциях мастера, и тогда раскладка совпадает
+    с «мастер, умноженный на множитель», символ в символ.
+    """
+    stacks = (doc["master"].get(str(symbol_id)) or {}).get("stacks") or {}
+    if not stacks:
+        return {}
+    shares = _shares(doc, symbol_id, reel) or {
+        str(length): float(times) for length, times in stacks.items()
+    }
+    return _apportion(stack_total(doc, symbol_id, reel), shares)
 
 
 def effective_reels(doc: dict) -> list[dict]:
@@ -1165,15 +1215,11 @@ def effective_reels(doc: dict) -> list[dict]:
     for index in range(len(doc["reels"])):
         reel: dict[str, dict] = {}
         for key, entry in doc["master"].items():
-            factor = multiplier(doc, int(key), index)
-            # round() в Python округляет 4.5 к чётному, то есть к 4. Для
-            # множителя это сюрприз: половина должна идти вверх.
-            scaled = {}
-            for length, times in entry["stacks"].items():
-                hand = stack_override(doc, int(key), index, length)
-                scaled[length] = times * factor + 0.5 if hand is None else hand
-                scaled[length] = int(scaled[length])
-            scaled = {length: times for length, times in scaled.items() if times > 0}
+            scaled = {
+                length: times
+                for length, times in stack_split(doc, int(key), index).items()
+                if times > 0
+            }
             if not scaled:  # ползунок в нуле — символа на этом риле нет
                 continue
             fixed = _fit_reel_symbol({"stacks": scaled, "infinity": entry["infinity"]})
@@ -1265,50 +1311,110 @@ def set_pattern(target: str, reel=None, mult=None, top=None) -> dict:
     return _read(name)["pattern"]
 
 
-def set_pattern_count(target: str, length, reel, value) -> dict:
-    """Сколько стеков этой длины стоит на этом риле. Пусто — вернуть как в мастере."""
-    name = active_set()
-    doc = _read(name)
-    # имя не `value`: параметр с этим именем уже занят количеством стеков
-    kind, _, value_key = str(target or "").partition(":")
+def _pattern_target(doc: dict, target: str) -> str:
+    kind, _, value = str(target or "").partition(":")
     if kind == "id":
-        _find(doc["symbols"], int(value_key))
+        _find(doc["symbols"], int(value))
     elif kind == "group":
-        _find_group(doc["groups"], _clean_group(value_key))
+        _find_group(doc["groups"], _clean_group(value))
     else:
         raise SymbolError(f"непонятная цель паттерна {target!r}")
+    return f"{kind}:{value}"
+
+
+def _target_symbol(doc: dict, key: str) -> int:
+    """Любой символ цели: у группы значения одинаковые, хватит первого."""
+    kind, _, value = key.partition(":")
+    if kind == "id":
+        return int(value)
+    members = _find_group(doc["groups"], value)["members"]
+    if not members:
+        raise SymbolError(f"в группе {value!r} нет символов")
+    return members[0]
+
+
+def set_pattern_count(target: str, length, reel, value) -> dict:
+    """Сколько стеков этой длины на этом риле — **за счёт остальных длин**.
+
+    Итог по риле задаёт общий множитель, панель приоритета его только делит.
+    Поэтому поднять одну длину можно лишь опустив другие: остаток расходится
+    между ними в их нынешних пропорциях. Символов станет больше или меньше, а
+    стеков — столько же.
+    """
+    name = active_set()
+    doc = _read(name)
+    key = _pattern_target(doc, target)
+    symbol_id = _target_symbol(doc, key)
+    index = _reel_index(doc, reel)
 
     try:
         length = int(length)
     except (TypeError, ValueError) as exc:
         raise SymbolError(f"непонятная длина стека {length!r}") from exc
-    if not 1 <= length <= MAX_STACK:
-        raise SymbolError(f"длина {length} вне диапазона 1..{MAX_STACK}")
-    text = str(value).strip() if value is not None else ""
-    if text in ("", "-"):
-        hand = None  # пусто — снова как в мастере
-    else:
-        try:
-            hand = max(0, int(float(text.replace(",", "."))))
-        except (TypeError, ValueError) as exc:
-            raise SymbolError(f"количество стеков {value!r} — не число") from exc
+    stacks = (doc["master"].get(str(symbol_id)) or {}).get("stacks") or {}
+    if str(length) not in stacks:
+        raise SymbolError(f"длины {length} у этой цели в мастер-риле нет")
 
-    key = f"{kind}:{value_key}"
     entry = doc["pattern"].get(key) or {
         "max": 2,
         "mult": [1.0] * len(doc["reels"]),
         "counts": {},
     }
-    index = _reel_index(doc, reel)
     rows = dict(entry.get("counts") or {})
-    row = list(rows.get(str(length)) or [])
-    while len(row) < len(doc["reels"]):
-        row.append(None)
-    row[index] = hand
-    rows[str(length)] = row
+
+    text = str(value).strip() if value is not None else ""
+    if text in ("", "-"):
+        # пусто — весь столбец рила возвращается к пропорциям мастера: делить
+        # одну длину, оставив соседей заданными, было бы полуправдой
+        for row_key in list(rows):
+            row = list(rows[row_key])
+            while len(row) < len(doc["reels"]):
+                row.append(None)
+            row[index] = None
+            rows[row_key] = row
+    else:
+        try:
+            wanted = max(0, int(float(text.replace(",", "."))))
+        except (TypeError, ValueError) as exc:
+            raise SymbolError(f"количество стеков {value!r} — не число") from exc
+
+        total = stack_total(doc, symbol_id, index)
+        current = stack_split(doc, symbol_id, index)
+        wanted = min(wanted, total)
+
+        others = {k: v for k, v in current.items() if k != str(length)}
+        left = total - wanted
+        pool = sum(others.values())
+        if not others:
+            split = {str(length): total}  # единственная длина забирает всё
+        else:
+            weights = others if pool > 0 else {k: 1.0 for k in others}
+            split = _apportion(left, weights)
+            split[str(length)] = wanted
+
+        for row_key, count in split.items():
+            row = list(rows.get(row_key) or [])
+            while len(row) < len(doc["reels"]):
+                row.append(None)
+            row[index] = count
+            rows[row_key] = row
+
     entry["counts"] = rows
     doc["pattern"][key] = entry
     _write(name, doc)
+    return _read(name)["pattern"]
+
+
+def reset_pattern(target: str) -> dict:
+    """Взять раскладку из мастер-рила: снимаем весь заданный приоритет цели."""
+    name = active_set()
+    doc = _read(name)
+    key = _pattern_target(doc, target)
+    entry = doc["pattern"].get(key)
+    if entry:
+        entry["counts"] = {}
+        doc["pattern"][key] = entry
+        _write(name, doc)
     return _read(name)["pattern"]
 
 
